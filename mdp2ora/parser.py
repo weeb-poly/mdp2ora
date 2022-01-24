@@ -4,6 +4,7 @@ from enum import Enum
 import xml.etree.ElementTree as ET
 
 import zlib
+#import snappy
 
 
 def parseMdpFile(filename):
@@ -25,28 +26,32 @@ class BinaryStruct:
     def from_bytes(cls, buf):
         return cls.from_io(BytesIO(buf))
 
-
-class MdpItemType(Enum):
-    Uncompressed = 0
-    Compressed = 1
-
+    
 class MdpTile(BinaryStruct):
     def __init__(self, col, row, unk, data):
         self.col = col
         self.row = row
-        self.unk = unk
         self.data = data
 
     @classmethod
     def from_io(cls, io):
         col = struct.unpack('<I', io.read(4))[0]
         row = struct.unpack('<I', io.read(4))[0]
-        unk = struct.unpack('<I', io.read(4))[0]
+        ctype = struct.unpack('<I', io.read(4))[0]
         size = struct.unpack('<I', io.read(4))[0]
         raw_data = io.read(size)
         io.seek((4 - size) % 4, 1)
-        data = zlib.decompress(raw_data) 
+        if ctype == 0: # zlib
+            data = zlib.decompress(raw_data)
+        elif ctype == 1: # snappy
+            #data = snappy.uncompress(raw_data)
+            data = raw_data
+        elif ctype == 2:
+            # TODO: fastlz decompression
+            #data = fastlz.decompress(raw_data)
+            data = raw_data
         return cls(col, row, unk, data)
+
 
 class MdpItemRaw(BinaryStruct):
     def __init__(self, name, item_type, data, compressed_size, expanded_size):
@@ -58,14 +63,14 @@ class MdpItemRaw(BinaryStruct):
 
     def get_layer_tiles(self):
         io = BytesIO(self.data)
-        tiles_num = struct.unpack('<I', io.read(4))[0]
-        dim = struct.unpack('<I', io.read(4))[0]
+        tileNum = struct.unpack('<I', io.read(4))[0]
+        tileSize = struct.unpack('<I', io.read(4))[0]
 
-        tiles = [None] * tiles_num
-        for i in range(tiles_num):
+        tiles = [None] * tileNum
+        for i in range(tileNum):
             tiles[i] = MdpTile.from_io(io)
 
-        return (dim, tiles,)
+        return (tileSize, tiles,)
 
     @classmethod
     def from_io(cls, io):
@@ -79,7 +84,7 @@ class MdpItemRaw(BinaryStruct):
         assert magic_header == 'PAC '
 
         item_size = struct.unpack('<I', pack_header_io.read(4))[0]
-        item_type = MdpItemType(struct.unpack('<I', pack_header_io.read(4))[0])
+        item_type = struct.unpack('<I', pack_header_io.read(4))[0]
 
         compressed_size = struct.unpack('<I', pack_header_io.read(4))[0]
         expanded_size = struct.unpack('<I', pack_header_io.read(4))[0]
@@ -90,16 +95,16 @@ class MdpItemRaw(BinaryStruct):
         item_name = pack_header_io.read(64).decode('ascii').rstrip('\0')
 
         raw_data_len = expanded_size
-        if item_type == MdpItemType.Compressed:
+        if item_type == 1: # ZLIB
             raw_data_len = compressed_size
-        elif item_type == MdpItemType.Uncompressed:
+        elif item_type == 0: # NONE
             raw_data_len = expanded_size
-        
+
         assert raw_data_len == (item_size - 132)
 
         raw_data = io.read(raw_data_len)
 
-        if item_type == MdpItemType.Compressed:
+        if item_type == 1: # ZLIB
             raw_data = zlib.decompress(raw_data)
         
         return cls(item_name, item_type, raw_data, compressed_size, expanded_size)
